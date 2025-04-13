@@ -27,12 +27,12 @@ def load_id2gt(gt_file):
 
 def load_id2path(index_file):
     paths = []
-    fspec = open(index_file)
     id2path = dict()
-    for line in fspec.readlines():
-        id, path, _ = line.strip().split("\t")
-        id2path[id] = path
-        paths.append(path)
+    with open(index_file, encoding="utf-8") as fspec:
+        for line in fspec.readlines():
+            id, path, _ = line.strip().split("\t")
+            id2path[id] = path
+            paths.append(path)
     return paths, id2path
 
 

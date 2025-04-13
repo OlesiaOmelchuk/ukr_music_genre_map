@@ -47,9 +47,8 @@ def do_process(files, index):
         # compute audio representation (pre-processing)
         length = compute_audio_repr(audio_file, audio_repr_file)
         # index.tsv writing
-        fw = open(config_file.DATA_FOLDER + config['audio_representation_folder'] + "index_" + str(config['machine_i']) + ".tsv", "a")
-        fw.write("%s\t%s\t%s\n" % (id, audio_repr_file[len(config_file.DATA_FOLDER):], audio_file[len(config_file.DATA_FOLDER):]))
-        fw.close()
+        with open(config_file.DATA_FOLDER + config['audio_representation_folder'] + "index_" + str(config['machine_i']) + ".tsv", "a", encoding="utf-8") as fw:
+            fw.write("%s\t%s\t%s\n" % (id, audio_repr_file[len(config_file.DATA_FOLDER):], audio_file[len(config_file.DATA_FOLDER):]))
         print(str(index) + '/' + str(len(files)) + ' Computed: %s' % audio_file)
 
     except Exception as e:
@@ -91,12 +90,12 @@ if __name__ == '__main__':
 
     # list audios to process: according to 'index_file'
     files_to_convert = []
-    f = open(config_file.DATA_FOLDER + config["index_file"])
-    for line in f.readlines():
-        id, audio = line.strip().split("\t")
-        audio_repr = audio[:audio.rfind(".")] + ".pk" # .npy or .pk
-        files_to_convert.append((id, config['audio_folder'] + audio,
-                                 config_file.DATA_FOLDER + config['audio_representation_folder'] + audio_repr))
+    with open(config_file.DATA_FOLDER + config["index_file"], encoding="utf-8") as f:
+        for line in f.readlines():
+            id, audio = line.strip().split("\t")
+            audio_repr = audio[:audio.rfind(".")] + ".pk" # .npy or .pk
+            files_to_convert.append((id, config['audio_folder'] + audio,
+                                    config_file.DATA_FOLDER + config['audio_representation_folder'] + audio_repr))
 
     # compute audio representation
     if config['machine_i'] == config['n_machines'] - 1:

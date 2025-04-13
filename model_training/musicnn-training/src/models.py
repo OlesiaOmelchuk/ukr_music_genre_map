@@ -58,6 +58,16 @@ def model_number(x, is_training, config):
         return backend.temporal_pooling(midend_features, is_training, 50, 200, type='globalpool')
         # 787k params | ROC-AUC: 90.69 | PR-AUC: 38.44 | VAL-COST: 0.1304
 
+    elif config['model_number'] == 111:
+        print('\nMODEL: BN input > [7, 70%][7, 40%] + temporal > DENSE (dim 200)')
+        frontend_features_list = frontend.musically_motivated_cnns(x, is_training, config['audio_rep']['n_mels'], num_filt=1.6, type='7774timbraltemporal')
+        frontend_features = tf.concat(frontend_features_list, 2) # concatnate features coming from the front-end
+
+        midend_features_list = midend.dense_cnns(frontend_features, is_training, 64)
+        midend_features = tf.concat(midend_features_list, 2)  # dense connection: concatenate features from previous layers
+
+        return backend.temporal_pooling(midend_features, is_training, 50, 200, type='globalpool', return_penultinate=True)
+
     elif config['model_number'] == 12:
         print('\nMODEL: BN input > [7, 40%] > DENSE > ATTENTION + POSITIONAL ENCODING')
         frontend_features_list = frontend.musically_motivated_cnns(x, is_training, config['audio_rep']['n_mels'], num_filt=4.5, type='74timbral')

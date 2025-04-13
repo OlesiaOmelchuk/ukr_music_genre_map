@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 
 
-def temporal_pooling(feature_map, is_training, num_classes_dataset, num_units_backend, type):
+def temporal_pooling(feature_map, is_training, num_classes_dataset, num_units_backend, type, return_penultinate=False):
 
     # which temporal pooling?
 
@@ -63,6 +63,10 @@ def temporal_pooling(feature_map, is_training, num_classes_dataset, num_units_ba
                             units=num_units_backend,
                             activation=tf.nn.relu,
                             kernel_initializer=tf.contrib.layers.variance_scaling_initializer())
+    
+    if return_penultinate:
+        return dense
+
     bn_dense = tf.compat.v1.layers.batch_normalization(dense, training=is_training)
 
     # output layer

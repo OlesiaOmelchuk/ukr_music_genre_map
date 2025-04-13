@@ -11,14 +11,117 @@ import config_file, shared
 import pickle
 from tensorflow.python.framework import ops
 
+from models_backend import positional_encoding
 
+
+def multi_head_attention(inputs, num_heads, d_model, d_k, d_v, scope="multihead_attention"):
+    """
+    Args:
+        inputs: Tensor of shape [batch_size, seq_len, d_model]
+        num_heads: Number of attention heads
+        d_model: Original embedding dimension (must be divisible by num_heads)
+        d_k: Key/Query dimension per head
+        d_v: Value dimension per head
+    Returns:
+        output: Tensor of shape [batch_size, seq_len, d_model]
+    """
+    with tf.variable_scope(scope):
+        batch_size = tf.shape(inputs)[0]
+        seq_len = tf.shape(inputs)[1]
+
+        # Linear projections for Q, K, V (with learnable weights)
+        Q = tf.layers.dense(inputs, d_model, name="q_proj")  # [batch, seq_len, d_model]
+        K = tf.layers.dense(inputs, d_model, name="k_proj")  # [batch, seq_len, d_model]
+        V = tf.layers.dense(inputs, d_model, name="v_proj")  # [batch, seq_len, d_model]
+
+        # Split into multiple heads (reshape + transpose)
+        Q = tf.reshape(Q, [batch_size, seq_len, num_heads, d_k])  # [batch, seq_len, num_heads, d_k]
+        Q = tf.transpose(Q, [0, 2, 1, 3])  # [batch, num_heads, seq_len, d_k]
+        
+        K = tf.reshape(K, [batch_size, seq_len, num_heads, d_k])  # [batch, seq_len, num_heads, d_k]
+        K = tf.transpose(K, [0, 2, 1, 3])  # [batch, num_heads, seq_len, d_k]
+        
+        V = tf.reshape(V, [batch_size, seq_len, num_heads, d_v])  # [batch, seq_len, num_heads, d_v]
+        V = tf.transpose(V, [0, 2, 1, 3])  # [batch, num_heads, seq_len, d_v]
+
+        # Scaled dot-product attention
+        scores = tf.matmul(Q, K, transpose_b=True) / tf.sqrt(tf.cast(d_k, tf.float32))  # [batch, num_heads, seq_len, seq_len]
+        attn_weights = tf.nn.softmax(scores, axis=-1)  # [batch, num_heads, seq_len, seq_len]
+        attn_output = tf.matmul(attn_weights, V)  # [batch, num_heads, seq_len, d_v]
+
+        # Merge heads back
+        attn_output = tf.transpose(attn_output, [0, 2, 1, 3])  # [batch, seq_len, num_heads, d_v]
+        attn_output = tf.reshape(attn_output, [batch_size, seq_len, num_heads * d_v])  # [batch, seq_len, d_model]
+
+        # Final linear projection
+        # output = tf.layers.dense(attn_output, d_model, name="out_proj")  # [batch, seq_len, d_model]
+        
+        return attn_output
+    
 def tf_define_model_and_cost(config):
     # tensorflow: define the model
+    num_musicnn_segments = config['num_musicnn_segments']  # 120 seconds / 3-second segments
+    penultinate_units = 200  # e.g., 200 units in the last layer
+    segment_frames = config['xInput']  # e.g., 187 frames (3 sec)
+    n_mels = config['yInput']  # e.g., 96 mel bins
+    feature_vec_dim = config['feature_vector_dim'] # size of the penultimate layer of the model; will be used as a feature vector for the song
+
     with tf.name_scope('model'):
-        x = tf.compat.v1.placeholder(tf.float32, [None, config['xInput'], config['yInput']])
+        # Input placeholders [batch, num_musicnn_segments, 187, 96]
+        x = tf.compat.v1.placeholder(tf.float32, [None, num_musicnn_segments, segment_frames, n_mels])
         y_ = tf.compat.v1.placeholder(tf.float32, [None, config['num_classes_dataset']])
         is_train = tf.compat.v1.placeholder(tf.bool)
-        y = models.model_number(x, is_train, config)
+
+        # Process all segments in parallel
+        batch_size = tf.shape(x)[0]
+        x_reshaped = tf.reshape(x, [-1, segment_frames, n_mels])  # [batch*num_musicnn_segments, 187, 96]
+
+        # Original segment-level model
+        # TODO: remove the final projection layer from the model (and return penultimate for example)
+        with tf.variable_scope('musicnn'):
+            segment_logits = models.model_number(x_reshaped, is_train, config)  # [batch*num_musicnn_segments, penultinate_units]
+
+        print('Segment logits shape:', segment_logits.get_shape())
+
+        # Reshape back to [batch, num_musicnn_segments, penultinate_units]
+        segment_logits = tf.reshape(segment_logits, [batch_size, num_musicnn_segments, penultinate_units])  # [batch, num_musicnn_segments, penultinate_units]
+
+        print('Segment logits shape:', segment_logits.get_shape())
+
+        # Apply positional encoding to segment logits
+        pos_embedding = positional_encoding(segment_logits.get_shape().as_list())
+        segment_logits = tf.add(segment_logits, pos_embedding)  # [batch, num_musicnn_segments, penultinate_units]
+        print('Segment logits with positional encoding shape:', segment_logits.get_shape())
+
+        # TODO: batch normalization (?)
+
+        # Calculate attention and add to segment logits
+        attention_output = multi_head_attention(segment_logits, num_heads=1, d_model=penultinate_units, d_k=penultinate_units, d_v=penultinate_units) # [batch, num_musicnn_segments, penultinate_units]
+        print('attention_output shape:', attention_output.get_shape())
+        segment_logits = tf.add(segment_logits, attention_output)  # [batch, num_musicnn_segments, penultinate_units]
+
+        # Aggregate segment-level features into song-level feature vector
+        with tf.variable_scope('aggregation'):
+            penultinate_units_agg = tf.compat.v1.layers.flatten(segment_logits)  # [batch, num_musicnn_segments*penultinate_units]
+            penultinate_units_agg = tf.compat.v1.layers.batch_normalization(penultinate_units_agg, training=is_train)
+            penultinate_units_agg_dropout = tf.compat.v1.layers.dropout(penultinate_units_agg, rate=0.5, training=is_train)
+            feature_vectors_dense = tf.compat.v1.layers.dense(
+                inputs=penultinate_units_agg_dropout,
+                units=feature_vec_dim,
+                activation=tf.nn.relu,
+                kernel_initializer=tf.contrib.layers.variance_scaling_initializer()
+            )  # [batch, feature_vec_dim]
+
+        # Finally, apply a dense layer to project from penultinate_units to num_classes
+        feature_vectors_dense = tf.compat.v1.layers.batch_normalization(feature_vectors_dense, training=is_train)
+        feature_vectors_dense_dropout = tf.compat.v1.layers.dropout(feature_vectors_dense, rate=0.5, training=is_train)
+        y = tf.compat.v1.layers.dense(
+            inputs=feature_vectors_dense_dropout,
+            units=config['num_classes_dataset'],
+            activation=None,
+            kernel_initializer=tf.contrib.layers.variance_scaling_initializer()
+        ) # [batch, num_classes_dataset]
+
         normalized_y = tf.nn.sigmoid(y)
         print(normalized_y.get_shape())
     print('Number of parameters of the model: ' + str(shared.count_params(tf.trainable_variables()))+'\n')
@@ -42,26 +145,48 @@ def tf_define_model_and_cost(config):
 
 
 def data_gen(id, audio_repr_path, gt, pack):
-
-    [config, sampling, param_sampling, augmentation] = pack
-
-    # load audio representation -> audio_repr shape: NxM
+    [config, sampling_strategy, segment_len_frames, num_musicnn_segments] = pack
+    
+    # Load audio representation
     audio_rep = pickle.load(open(config_file.DATA_FOLDER + audio_repr_path, 'rb'))
+    
+    # Apply preprocessing
     if config['pre_processing'] == 'logEPS':
         audio_rep = np.log10(audio_rep + np.finfo(float).eps)
-    elif  config['pre_processing'] == 'logC':
+    elif config['pre_processing'] == 'logC':
         audio_rep = np.log10(10000 * audio_rep + 1)
 
-    # let's deliver some data!
-    last_frame = int(audio_rep.shape[0]) - int(config['xInput']) + 1
-    if sampling == 'random':
-        for i in range(0, param_sampling):
-            time_stamp = random.randint(0,last_frame-1)
-            yield dict(X = audio_rep[time_stamp : time_stamp+config['xInput'], : ], Y = gt, ID = id)
+    # Ensure we have enough frames
+    assert audio_rep.shape[0] >= segment_len_frames, \
+           f"Audio is too short ({audio_rep.shape[0]} frames), needs at least {segment_len_frames} frames"
+    
+    # Take random 2-minute crop #TODO: random or first/last
+    if sampling_strategy == 'random':
+        max_start = audio_rep.shape[0] - segment_len_frames
+        start_frame = random.randint(0, max_start)
+    elif sampling_strategy == 'first':
+        start_frame = 0
+    else:
+        raise ValueError(f"Unsupported sampling strategy: {sampling_strategy}. Use 'random' or 'first'.")
+    cropped = audio_rep[start_frame:start_frame + segment_len_frames, :]
+    
+    # Split into 3-second segments # TODO: optimize
+    segments = []
+    for seg_idx in range(num_musicnn_segments):
+        start = seg_idx * config['xInput']
+        end = start + config['xInput']
+        segments.append(cropped[start:end, :])
+    
+    # Stack segments into [num_musicnn_segments, xInput, n_mels]
+    x = np.stack(segments)
 
-    elif sampling == 'overlap_sampling':
-        for time_stamp in range(0, last_frame, param_sampling):
-            yield dict(X = audio_rep[time_stamp : time_stamp+config['xInput'], : ], Y = gt, ID = id)
+    print('Data shape:', x.shape)
+    
+    yield {
+        'X': x,          # Shape: [num_musicnn_segments, xInput, n_mels]
+        'Y': gt,         # Original ground truth
+        'ID': id,
+    }
 
 
 if __name__ == '__main__':
@@ -114,6 +239,12 @@ if __name__ == '__main__':
     json.dump(config, open(model_folder + 'config.json', 'w'))
     print('\nConfig file saved: ' + str(config))
 
+    # define the musicnn segment length and number of such segments in the input audio segment of length 'segment_len'
+    musicnn_segment_len = 3 # in sec; TODO: make configurable via config (n_frames, hop_size, etc.)
+    num_musicnn_segments = int(config['segment_len'] / musicnn_segment_len)
+    segment_len_frames = num_musicnn_segments * config['xInput']
+    config['num_musicnn_segments'] = num_musicnn_segments
+
     # tensorflow: define model and cost
     [x, y_, is_train, y, normalized_y, cost] = tf_define_model_and_cost(config)
 
@@ -140,14 +271,14 @@ if __name__ == '__main__':
     print('-----------------------------------')
 
     # pescador train: define streamer
-    train_pack = [config, config['train_sampling'], config['param_train_sampling'], False]
+    train_pack = [config, config['sampling_strategy'], segment_len_frames, num_musicnn_segments]
     train_streams = [pescador.Streamer(data_gen, id, id2audio_repr_path[id], id2gt_train[id], train_pack) for id in ids_train]
     train_mux_stream = pescador.StochasticMux(train_streams, n_active=config['batch_size']*2, rate=None, mode='exhaustive')
     train_batch_streamer = pescador.Streamer(pescador.buffer_stream, train_mux_stream, buffer_size=config['batch_size'], partial=True)
     train_batch_streamer = pescador.ZMQStreamer(train_batch_streamer)
 
     # pescador val: define streamer
-    val_pack = [config, 'overlap_sampling', config['xInput'], False]
+    val_pack = [config, config['sampling_strategy'], segment_len_frames, num_musicnn_segments]
     val_streams = [pescador.Streamer(data_gen, id, id2audio_repr_path[id], id2gt_val[id], val_pack) for id in ids_val]
     val_mux_stream = pescador.ChainMux(val_streams, mode='exhaustive')
     val_batch_streamer = pescador.Streamer(pescador.buffer_stream, val_mux_stream, buffer_size=config['val_batch_size'], partial=True)
@@ -171,6 +302,7 @@ if __name__ == '__main__':
     tmp_learning_rate = config['learning_rate']
     print('Training started..')
     for i in range(config['epochs']):
+        print('Epoch %d' % (i))
         # training: do not train first epoch, to see random weights behaviour
         start_time = time.time()
         array_train_cost = []
