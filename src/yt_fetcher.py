@@ -10,6 +10,14 @@ import random
 
 def search_track(artist, track):
     results = Search(f"{artist} {track}")
+    if not results.videos:
+        logger.error(f"No results for {artist} - {track}")
+        return {
+            "title": None,
+            "url": None,
+            "duration": None,
+            "views": None
+        }
     first_video = results.videos[0]
     # TODO: check if the artist name is in the channel name
     try:
@@ -34,10 +42,11 @@ def download_track(url, save_dir):
         filename = f"{yt.title}.mp3"
         # yt.streams.filter(only_audio=True).first().download(output_path=save_dir, filename=filename)
         audio = sorted(yt.streams.filter(only_audio=True), key=lambda x: int(x.abr[:-4]))[-1]  # get audio with highest bitrate
-        audio.download(output_path=save_dir, filename=filename)
+        save_path = audio.download(output_path=save_dir, filename=filename, timeout=15)
+        filename = os.path.basename(save_path)
     except Exception as e:
         logger.error(f"Error downloading {url}: {e}")
-        filename = None
+        return
     return filename
 
 def fetch_yt_data(input_csv, output_csv, audio_dir):
@@ -47,23 +56,26 @@ def fetch_yt_data(input_csv, output_csv, audio_dir):
         df = pd.read_csv(output_csv)
     else:
         df = pd.read_csv(input_csv)
+
+    if "yt_url" not in df.columns:
         df["yt_url"] = None
 
-    for i, row in df[390:].iterrows():
-        if not pd.isnull(row["yt_url"]):
-            # logger.info(f"Skipping {row['artist']} - {row['title']}")
-            continue
-        sleep(random.uniform(0, 1))
+    for i, row in df.iterrows():
+        if pd.isnull(row["yt_url"]):
+            sleep(random.uniform(0, 0.2))
 
-        track_info = search_track(row["artist"], row["title"])
-        df.loc[i, "yt_title"] = track_info["title"]
-        df.loc[i, "yt_url"] = track_info["url"]
-        df.loc[i, "yt_duration"] = track_info["duration"]
-        df.loc[i, "yt_views"] = track_info["views"]
+            track_info = search_track(row["artist"], row["title"])
+            df.loc[i, "yt_title"] = track_info["title"]
+            df.loc[i, "yt_url"] = track_info["url"]
+            df.loc[i, "yt_duration"] = track_info["duration"]
+            df.loc[i, "yt_views"] = track_info["views"]
 
-        if not pd.isnull(track_info["url"]):
-            filename = download_track(track_info["url"], audio_dir)
-            df.loc[i, "audio_path"] = os.path.join(audio_dir, filename) if filename else None
+            if not pd.isnull(track_info["duration"]) and track_info["duration"] < 400:
+                if not pd.isnull(track_info["url"]):
+                    filename = download_track(track_info["url"], audio_dir)
+                    df.loc[i, "audio_path"] = os.path.join(audio_dir, filename) if filename else None
+            else:
+                logger.warning(f"Skipping {row['artist']} - {row['title']} due to duration > 400s")
 
         if i % 10 == 0:
             logger.info(f"{i+1}/{len(df)}")

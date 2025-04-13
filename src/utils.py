@@ -26,7 +26,7 @@ def get_soup(url):
     response = requests.get(url, headers=headers)
 
     if response.status_code != 200 or response.text.strip() == "":
-        logger.warning(f"Fallback to Selenium for {url}")
+        # logger.warning(f"Fallback to Selenium for {url}")
         driver.get(url)
         html = driver.page_source
     else:
