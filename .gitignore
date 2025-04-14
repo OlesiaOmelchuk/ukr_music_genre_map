@@ -180,3 +180,9 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# model training artifacts and data
+model_training/musicnn-training/data/
+output/
+
+debug*

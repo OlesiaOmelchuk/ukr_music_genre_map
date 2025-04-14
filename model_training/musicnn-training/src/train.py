@@ -10,8 +10,16 @@ import models
 import config_file, shared
 import pickle
 from tensorflow.python.framework import ops
+from loguru import logger
 
 from models_backend import positional_encoding
+
+
+# Configure logger to save logs to a file with date and time in a 'log' directory
+log_dir = 'log'
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, f"{time.strftime('%Y-%m-%d_%H-%M-%S')}.log")
+logger.add(log_file, level="DEBUG")
 
 
 def multi_head_attention(inputs, num_heads, d_model, d_k, d_v, scope="multihead_attention"):
@@ -81,23 +89,23 @@ def tf_define_model_and_cost(config):
         with tf.variable_scope('musicnn'):
             segment_logits = models.model_number(x_reshaped, is_train, config)  # [batch*num_musicnn_segments, penultinate_units]
 
-        print('Segment logits shape:', segment_logits.get_shape())
+        logger.debug(f'Segment logits shape: {segment_logits.get_shape()}')
 
         # Reshape back to [batch, num_musicnn_segments, penultinate_units]
         segment_logits = tf.reshape(segment_logits, [batch_size, num_musicnn_segments, penultinate_units])  # [batch, num_musicnn_segments, penultinate_units]
 
-        print('Segment logits shape:', segment_logits.get_shape())
+        logger.debug(f'Segment logits shape: {segment_logits.get_shape()}')
 
         # Apply positional encoding to segment logits
         pos_embedding = positional_encoding(segment_logits.get_shape().as_list())
         segment_logits = tf.add(segment_logits, pos_embedding)  # [batch, num_musicnn_segments, penultinate_units]
-        print('Segment logits with positional encoding shape:', segment_logits.get_shape())
+        logger.debug(f'Segment logits with positional encoding shape: {segment_logits.get_shape()}')
 
         # TODO: batch normalization (?)
 
         # Calculate attention and add to segment logits
         attention_output = multi_head_attention(segment_logits, num_heads=1, d_model=penultinate_units, d_k=penultinate_units, d_v=penultinate_units) # [batch, num_musicnn_segments, penultinate_units]
-        print('attention_output shape:', attention_output.get_shape())
+        logger.debug(f'attention_output shape: {attention_output.get_shape()}')
         segment_logits = tf.add(segment_logits, attention_output)  # [batch, num_musicnn_segments, penultinate_units]
 
         # Aggregate segment-level features into song-level feature vector
@@ -123,8 +131,7 @@ def tf_define_model_and_cost(config):
         ) # [batch, num_classes_dataset]
 
         normalized_y = tf.nn.sigmoid(y)
-        print(normalized_y.get_shape())
-    print('Number of parameters of the model: ' + str(shared.count_params(tf.trainable_variables()))+'\n')
+    logger.info(f'Number of parameters of the model: {str(shared.count_params(tf.trainable_variables()))}')
 
     # tensorflow: define cost function
     with tf.name_scope('metrics'):
@@ -134,12 +141,12 @@ def tf_define_model_and_cost(config):
             vars = tf.trainable_variables()
             lossL2 = tf.add_n([ tf.nn.l2_loss(v) for v in vars if 'kernel' in v.name ])
             cost = cost + config['weight_decay']*lossL2
-            print('L2 norm, weight decay!')
+            logger.info(f'L2 norm, weight decay!')
 
-    # print all trainable variables, for debugging
+    # logger.info fall trainable variables, for debugging
     model_vars = [v for v in tf.global_variables()]
     for variables in model_vars:
-        print(variables)
+        logger.debug(variables)
 
     return [x, y_, is_train, y, normalized_y, cost]
 
@@ -180,7 +187,7 @@ def data_gen(id, audio_repr_path, gt, pack):
     # Stack segments into [num_musicnn_segments, xInput, n_mels]
     x = np.stack(segments)
 
-    print('Data shape:', x.shape)
+    # logger.debug(f'Data shape:', x.shape)
     
     yield {
         'X': x,          # Shape: [num_musicnn_segments, xInput, n_mels]
@@ -227,9 +234,9 @@ if __name__ == '__main__':
     # set output
     config['classes_vector'] = list(range(config['num_classes_dataset']))
 
-    print('# Train:', len(ids_train))
-    print('# Val:', len(ids_val))
-    print('# Classes:', config['classes_vector'])
+    logger.info(f'# Train: {len(ids_train)}')
+    logger.info(f'# Val: {len(ids_val)}')
+    logger.info(f"# Classes: {config['classes_vector']}")
 
     # save experimental settings
     experiment_id = str(shared.get_epoch_time()) + args.configuration
@@ -237,7 +244,7 @@ if __name__ == '__main__':
     if not os.path.exists(model_folder):
         os.makedirs(model_folder)
     json.dump(config, open(model_folder + 'config.json', 'w'))
-    print('\nConfig file saved: ' + str(config))
+    logger.info(f'Config file saved: {str(config)}')
 
     # define the musicnn segment length and number of such segments in the input audio segment of length 'segment_len'
     musicnn_segment_len = 3 # in sec; TODO: make configurable via config (n_frames, hop_size, etc.)
@@ -267,8 +274,7 @@ if __name__ == '__main__':
     sess = tf.InteractiveSession()
     tf.keras.backend.set_session(sess)
 
-    print('\nEXPERIMENT: ', str(experiment_id))
-    print('-----------------------------------')
+    logger.info(f'EXPERIMENT: {str(experiment_id)}')
 
     # pescador train: define streamer
     train_pack = [config, config['sampling_strategy'], segment_len_frames, num_musicnn_segments]
@@ -289,7 +295,7 @@ if __name__ == '__main__':
     saver = tf.train.Saver()
     if config['load_model'] != None: # restore model weights from previously saved model
         saver.restore(sess, config['load_model']) # end with /!
-        print('Pre-trained model loaded!')
+        logger.info(f'Pre-trained model loaded!')
 
     # writing headers of the train_log.tsv
     fy = open(model_folder + 'train_log.tsv', 'a')
@@ -300,9 +306,9 @@ if __name__ == '__main__':
     k_patience = 0
     cost_best_model = np.Inf
     tmp_learning_rate = config['learning_rate']
-    print('Training started..')
+    logger.info(f'Training started..')
     for i in range(config['epochs']):
-        print('Epoch %d' % (i))
+        logger.info(f'Epoch {i+1}')
         # training: do not train first epoch, to see random weights behaviour
         start_time = time.time()
         array_train_cost = []
@@ -330,15 +336,14 @@ if __name__ == '__main__':
 
         # Decrease the learning rate after not improving in the validation set
         if config['patience'] and k_patience >= config['patience']:
-            print('Changing learning rate!')
+            logger.info(f'Changing learning rate from {tmp_learning_rate} to {tmp_learning_rate / 2}')
             tmp_learning_rate = tmp_learning_rate / 2
-            print(tmp_learning_rate)
             k_patience = 0
 
         # Early stopping: keep the best model in validation set
         if val_cost >= cost_best_model:
             k_patience += 1
-            print('Epoch %d, train cost %g, val cost %g,'
+            logger.info(f'Epoch %d, train cost %g, val cost %g,'
                   'epoch-time %gs, lr %g, time-stamp %s' %
                   (i+1, train_cost, val_cost, epoch_time, tmp_learning_rate,
                    str(time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime()))))
@@ -346,11 +351,11 @@ if __name__ == '__main__':
         else:
             # save model weights to disk
             save_path = saver.save(sess, model_folder)
-            print('Epoch %d, train cost %g, val cost %g, '
+            logger.info(f'Epoch %d, train cost %g, val cost %g, '
                   'epoch-time %gs, lr %g, time-stamp %s - [BEST MODEL]'
                   ' saved in: %s' %
                   (i+1, train_cost, val_cost, epoch_time,tmp_learning_rate,
                    str(time.strftime('%Y-%m-%d %H:%M:%S',time.gmtime())), save_path))
             cost_best_model = val_cost
 
-    print('\nEVALUATE EXPERIMENT -> '+ str(experiment_id))
+    logger.info(f'EVALUATE EXPERIMENT -> {str(experiment_id)}')
