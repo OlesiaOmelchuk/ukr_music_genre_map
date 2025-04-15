@@ -1,6 +1,7 @@
 # Custom
 backlog/
 audio*/
+*.zip
 metadata/
 _*.ipynb
 
@@ -185,4 +186,5 @@ cython_debug/
 model_training/musicnn-training/data/
 output/
 
+# debugging files
 debug*
