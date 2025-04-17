@@ -8,10 +8,19 @@ import pickle
 import numpy as np
 from pathlib import Path
 from pydub import AudioSegment
+import time
+from loguru import logger
 
 DEBUG = False
 
-def compute_audio_repr(audio_file, audio_repr_file):
+# Configure logger to save logs to a file with date and time in a 'log' directory
+log_dir = 'log'
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, f"preprocess_{time.strftime('%Y-%m-%d_%H-%M-%S')}.log")
+logger.add(log_file, level="DEBUG")
+
+
+def compute_audio_repr(audio_file, audio_repr_file, config):
 
     # audio, sr = librosa.load(audio_file, sr=config['resample_sr'])
 
@@ -21,6 +30,11 @@ def compute_audio_repr(audio_file, audio_repr_file):
     sr = config['resample_sr']
 
     audio = audio / np.max(np.abs(audio))  # Normalize audio
+
+    logger.debug(f"Audio file: {audio_file}, Sample rate: {sr}, Length: {len(audio)}")
+
+    if len(audio) < config['resample_sr'] * 120:
+        logger.warning(f"Audio file shorter than 2 min: {audio_file}")
 
     if config['type'] == 'waveform':
         audio_repr = audio
@@ -32,50 +46,51 @@ def compute_audio_repr(audio_file, audio_repr_file):
                                                     n_fft=config['n_fft'],
                                                     n_mels=config['n_mels']).T
     # Compute length
-    print(audio_repr.shape)
+    logger.debug(f"Audio representation shape: {audio_repr.shape}")
     length = audio_repr.shape[0]
 
     # Transform to float16 (to save storage, and works the same)
     audio_repr = audio_repr.astype(np.float16)
 
     # Write results:
-    with open(audio_repr_file, "wb") as f:
-        pickle.dump(audio_repr, f)  # audio_repr shape: NxM
+    if audio_repr_file is not None:
+        with open(audio_repr_file, "wb") as f:
+            pickle.dump(audio_repr, f)  # audio_repr shape: NxM
 
     return length
 
 
-def do_process(files, index):
+def do_process(files, index, config):
 
     try:
         [id, audio_file, audio_repr_file] = files[index]
         os.makedirs(os.path.dirname(audio_repr_file), exist_ok=True)
         # compute audio representation (pre-processing)
-        length = compute_audio_repr(audio_file, audio_repr_file)
+        length = compute_audio_repr(audio_file, audio_repr_file, config)
         # index.tsv writing
         with open(os.path.join(config_file.DATA_FOLDER, config['audio_representation_folder'], "index_" + str(config['machine_i']) + ".tsv"), "a", encoding="utf-8") as fw:
             fw.write("%s\t%s\t%s\n" % (id, audio_repr_file[len(config_file.DATA_FOLDER):], audio_file))
-        print(str(index) + '/' + str(len(files)) + ' Computed: %s' % audio_file)
+        logger.info(str(index) + '/' + str(len(files)) + ' Computed: %s' % audio_file)
 
     except Exception as e:
         ferrors = open(os.path.join(config_file.DATA_FOLDER, config['audio_representation_folder'], "errors" + str(config['machine_i']) + ".txt"), "a")
         ferrors.write(audio_file + "\n")
         ferrors.write(str(e))
         ferrors.close()
-        print('Error computing audio representation: ', audio_file)
-        print(str(e))
+        logger.error('Error computing audio representation: ', audio_file)
+        logger.error(str(e))
 
 
-def process_files(files):
+def process_files(files, config):
 
     if DEBUG:
-        print('WARNING: Parallelization is not used!')
+        logger.warning('WARNING: Parallelization is not used!')
         for index in range(0, len(files)):
-            do_process(files, index)
+            do_process(files, index, config)
 
     else:
         Parallel(n_jobs=config['num_processing_units'])(
-            delayed(do_process)(files, index) for index in range(0, len(files)))
+            delayed(do_process)(files, index, config) for index in range(0, len(files)))
 
 
 if __name__ == '__main__':
@@ -86,6 +101,8 @@ if __name__ == '__main__':
     config = config_file.config_preprocess[args.configurationID]
 
     config['audio_representation_folder'] = "audio_representation/%s__%s/" % (config['identifier'], config['type'])
+
+    logger.info(f"Hop length: {config['hop']}, FFT size: {config['n_fft']}, Number of Mel bands: {config['n_mels']}")
     
     # set audio representations folder
     representations_dir = os.path.join(config_file.DATA_FOLDER, config['audio_representation_folder'])
@@ -112,13 +129,13 @@ if __name__ == '__main__':
 
     # compute audio representation
     if config['machine_i'] == config['n_machines'] - 1:
-        process_files(files_to_convert[int(len(files_to_convert) / config['n_machines']) * (config['machine_i']):])
+        process_files(files_to_convert[int(len(files_to_convert) / config['n_machines']) * (config['machine_i']):], config)
         # we just save parameters once! In the last thread run by n_machine-1!
         json.dump(config, open(os.path.join(representations_dir, "config.json"), "w"))
     else:
         first_index = int(len(files_to_convert) / config['n_machines']) * (config['machine_i'])
         second_index = int(len(files_to_convert) / config['n_machines']) * (config['machine_i'] + 1)
         assigned_files = files_to_convert[first_index:second_index]
-        process_files(assigned_files)
+        process_files(assigned_files, config)
 
-    print("Audio representation folder: " + config_file.DATA_FOLDER + config['audio_representation_folder'])
+    logger.info("Audio representation folder: " + config_file.DATA_FOLDER + config['audio_representation_folder'])
