@@ -12,6 +12,12 @@ import pickle
 from tensorflow.python.framework import ops
 from loguru import logger
 
+# # disable eager mode for tf.v1 compatibility with tf.v2
+# tf.compat.v1.disable_eager_execution()
+
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
+
 from models_backend import positional_encoding
 
 
@@ -117,7 +123,8 @@ def tf_define_model_and_cost(config):
                 inputs=penultinate_units_agg_dropout,
                 units=feature_vec_dim,
                 activation=tf.nn.relu,
-                kernel_initializer=tf.contrib.layers.variance_scaling_initializer()
+                kernel_initializer=tf.keras.initializers.VarianceScaling()
+                # kernel_initializer=tf.contrib.layers.variance_scaling_initializer()
             )  # [batch, feature_vec_dim]
 
         # Finally, apply a dense layer to project from penultinate_units to num_classes
@@ -127,7 +134,8 @@ def tf_define_model_and_cost(config):
             inputs=feature_vectors_dense_dropout,
             units=config['num_classes_dataset'],
             activation=None,
-            kernel_initializer=tf.contrib.layers.variance_scaling_initializer()
+            kernel_initializer=tf.keras.initializers.VarianceScaling()
+            # kernel_initializer=tf.contrib.layers.variance_scaling_initializer()
         ) # [batch, num_classes_dataset]
 
         normalized_y = tf.nn.sigmoid(y)
@@ -249,6 +257,11 @@ if __name__ == '__main__':
     if not os.path.exists(model_folder):
         os.makedirs(model_folder)
     json.dump(config, open(os.path.join(model_folder, 'config.json'), 'w'))
+
+    legacy_model_folder = model_folder
+    if not legacy_model_folder.endswith('/'):
+        legacy_model_folder += '/'
+
     logger.info(f'Config file saved: {str(config)}')
 
     # define the musicnn segment length and number of such segments in the input audio segment of length 'segment_len'
@@ -357,7 +370,7 @@ if __name__ == '__main__':
 
         else:
             # save model weights to disk
-            save_path = saver.save(sess, model_folder)
+            save_path = saver.save(sess, legacy_model_folder)
             logger.info(f'Epoch %d, train cost %g, val cost %g, '
                   'epoch-time %gs, lr %g, time-stamp %s - [BEST MODEL]'
                   ' saved in: %s' %
