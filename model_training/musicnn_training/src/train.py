@@ -18,7 +18,7 @@ from models_backend import positional_encoding
 # Configure logger to save logs to a file with date and time in a 'log' directory
 log_dir = 'log'
 os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, f"{time.strftime('%Y-%m-%d_%H-%M-%S')}.log")
+log_file = os.path.join(log_dir, f"{time.strftime('train_%Y-%m-%d_%H-%M-%S')}.log")
 logger.add(log_file, level="DEBUG")
 
 
@@ -155,7 +155,7 @@ def data_gen(id, audio_repr_path, gt, pack):
     [config, sampling_strategy, segment_len_frames, num_musicnn_segments] = pack
     
     # Load audio representation
-    audio_rep = pickle.load(open(config_file.DATA_FOLDER + audio_repr_path, 'rb'))
+    audio_rep = pickle.load(open(os.path.join(config_file.DATA_FOLDER, audio_repr_path), 'rb'))
     
     # Apply preprocessing
     if config['pre_processing'] == 'logEPS':
@@ -164,8 +164,13 @@ def data_gen(id, audio_repr_path, gt, pack):
         audio_rep = np.log10(10000 * audio_rep + 1)
 
     # Ensure we have enough frames
-    assert audio_rep.shape[0] >= segment_len_frames, \
-           f"Audio is too short ({audio_rep.shape[0]} frames), needs at least {segment_len_frames} frames"
+    try:
+        assert audio_rep.shape[0] >= segment_len_frames, \
+            f"Audio is too short ({audio_rep.shape[0]} frames), needs at least {segment_len_frames} frames"
+    except AssertionError as e:
+        logger.error(f"Audio representation for ID {id} is too short: {e}")
+        logger.error(f"Audio representation shape: {audio_rep.shape}")
+        return None
     
     # Take random 2-minute crop #TODO: random or first/last
     if sampling_strategy == 'random':
@@ -187,7 +192,7 @@ def data_gen(id, audio_repr_path, gt, pack):
     # Stack segments into [num_musicnn_segments, xInput, n_mels]
     x = np.stack(segments)
 
-    # logger.debug(f'Data shape:', x.shape)
+    # logger.debug(f'Data shape: {x.shape}')
     
     yield {
         'X': x,          # Shape: [num_musicnn_segments, xInput, n_mels]
@@ -206,7 +211,7 @@ if __name__ == '__main__':
     config = config_file.config_train[args.configuration]
 
     # load config parameters used in 'preprocess_librosa.py',
-    config_json = config_file.DATA_FOLDER + config['audio_representation_folder'] + 'config.json'
+    config_json = os.path.join(config_file.DATA_FOLDER, config['audio_representation_folder'], 'config.json')
     with open(config_json, "r") as f:
         params = json.load(f)
     config['audio_rep'] = params
@@ -220,15 +225,15 @@ if __name__ == '__main__':
         config['yInput'] = config['audio_rep']['n_mels']
 
     # load audio representation paths
-    file_index = config_file.DATA_FOLDER + config['audio_representation_folder'] + 'index.tsv'
+    file_index = os.path.join(config_file.DATA_FOLDER, config['audio_representation_folder'], 'index.tsv')
     [audio_repr_paths, id2audio_repr_path] = shared.load_id2path(file_index)
 
     # load training data
-    file_ground_truth_train = config_file.DATA_FOLDER + config['gt_train']
+    file_ground_truth_train = os.path.join(config_file.DATA_FOLDER, config['gt_train'])
     [ids_train, id2gt_train] = shared.load_id2gt(file_ground_truth_train)
 
     # load validation data
-    file_ground_truth_val = config_file.DATA_FOLDER + config['gt_val']
+    file_ground_truth_val = os.path.join(config_file.DATA_FOLDER, config['gt_val'])
     [ids_val, id2gt_val] = shared.load_id2gt(file_ground_truth_val)
 
     # set output
@@ -240,10 +245,10 @@ if __name__ == '__main__':
 
     # save experimental settings
     experiment_id = str(shared.get_epoch_time()) + args.configuration
-    model_folder = config_file.DATA_FOLDER + 'experiments/' + str(experiment_id) + '/'
+    model_folder = os.path.join(config_file.DATA_FOLDER, 'experiments', str(experiment_id))
     if not os.path.exists(model_folder):
         os.makedirs(model_folder)
-    json.dump(config, open(model_folder + 'config.json', 'w'))
+    json.dump(config, open(os.path.join(model_folder, 'config.json'), 'w'))
     logger.info(f'Config file saved: {str(config)}')
 
     # define the musicnn segment length and number of such segments in the input audio segment of length 'segment_len'
@@ -282,6 +287,7 @@ if __name__ == '__main__':
     train_mux_stream = pescador.StochasticMux(train_streams, n_active=config['batch_size']*2, rate=None, mode='exhaustive')
     train_batch_streamer = pescador.Streamer(pescador.buffer_stream, train_mux_stream, buffer_size=config['batch_size'], partial=True)
     train_batch_streamer = pescador.ZMQStreamer(train_batch_streamer)
+    logger.info('Successfully created train streamer!')
 
     # pescador val: define streamer
     val_pack = [config, config['sampling_strategy'], segment_len_frames, num_musicnn_segments]
@@ -289,6 +295,7 @@ if __name__ == '__main__':
     val_mux_stream = pescador.ChainMux(val_streams, mode='exhaustive')
     val_batch_streamer = pescador.Streamer(pescador.buffer_stream, val_mux_stream, buffer_size=config['val_batch_size'], partial=True)
     val_batch_streamer = pescador.ZMQStreamer(val_batch_streamer)
+    logger.info('Successfully created val streamer!')
 
     # tensorflow: create a session to run the tensorflow graph
     sess.run(tf.global_variables_initializer())
@@ -298,7 +305,7 @@ if __name__ == '__main__':
         logger.info(f'Pre-trained model loaded!')
 
     # writing headers of the train_log.tsv
-    fy = open(model_folder + 'train_log.tsv', 'a')
+    fy = open(os.path.join(model_folder, 'train_log.tsv'), 'a')
     fy.write('Epoch\ttrain_cost\tval_cost\tepoch_time\tlearing_rate\n')
     fy.close()
 
@@ -330,7 +337,7 @@ if __name__ == '__main__':
         train_cost = np.mean(array_train_cost)
         val_cost = np.mean(array_val_cost)
         epoch_time = time.time() - start_time
-        fy = open(model_folder + 'train_log.tsv', 'a')
+        fy = open(os.path.join(model_folder, 'train_log.tsv'), 'a')
         fy.write('%d\t%g\t%g\t%gs\t%g\n' % (i+1, train_cost, val_cost, epoch_time, tmp_learning_rate))
         fy.close()
 
