@@ -55,14 +55,14 @@ config_preprocess = {
         'audio_folder': AUDIO_FOLDER,               # end it with / -> this is an absolute path!
         'n_machines': 1,                          # parallelizing this process through 'n_machines'
         'machine_i': 0,                           # id number of the machine which is running this script (from 0 to n_machines-1)
-        'num_processing_units': 8,               # number of parallel processes in every machine
+        'num_processing_units': 1,               # number of parallel processes in every machine
         'type': 'time-freq',                      # kind of audio representation: 'time-freq' (only recommended option)
         'spectrogram_type': 'mel',                # 'mel' (only option) - parameters below should change according to this type
         'resample_sr': 16000,                     # sampling rate (original or the one to be resampled)
         'hop': 256,                               # hop size of the STFT
         'n_fft': 512,                             # frame size (number of freq bins of the STFT)
         'n_mels': 96,                             # number of mel bands
-        'index_file': os.path.join(DATA_FOLDER, "index", DATASET, "index.tsv"),  # list of audio representations to be computed
+        'index_file': os.path.join("index", DATASET, "index.tsv"),  # list of audio representations to be computed
     }
 }
 
@@ -161,8 +161,8 @@ config_train = {
         'name_run': '',
         # which data?
         'audio_representation_folder': os.path.join('audio_representation', f"{DATASET}__time-freq"),
-        'gt_train': os.path.join('index', DATASET, 'train_album_targets.tsv'),
-        'gt_val': os.path.join('index', DATASET, 'val_album_targets.tsv'),
+        'gt_train': os.path.join('index', DATASET, 'train_genre_targets.tsv'),
+        'gt_val': os.path.join('index', DATASET, 'val_genre_targets.tsv'),
 
         # input setup?
         'segment_len': 60,                         # length of the audio segment (in seconds)
@@ -175,7 +175,7 @@ config_train = {
         'model_number': 111,                       # number of the model as in models.py
         'load_model': None,                       # set to None or absolute path to the model
         'epochs': 100,                            # maximum number of epochs before stopping training
-        'batch_size': 8,                         # batch size during training
+        'batch_size': 4,                         # batch size during training
         'weight_decay': 1e-5,                     # None or value for the regularization parameter
         'learning_rate': 0.001,                   # learning rate
         'optimizer': 'Adam',                      # 'SGD_clip', 'SGD', 'Adam'
@@ -184,7 +184,7 @@ config_train = {
         # experiment settings?
         'feature_vector_dim': 128,                # size of the penultimate layer of the model; will be used as a feature vector for the song
         'num_classes_dataset': 122,                # the number of unique genre tags (435 albums/122 genres)
-        'val_batch_size': 8
+        'val_batch_size': 4
     },
 
     'ukr_songs_v1_2k_album': {
