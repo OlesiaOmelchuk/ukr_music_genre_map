@@ -56,15 +56,15 @@ def generate_index_files(df_path: str, output_dir: str, config_dir: str = "confi
     return genre_target_len, album_target_len
 
 
-def prepare_genre_targets(df: pd.DataFrame, genre_mapping_path: str = None):
+def prepare_genre_targets(df: pd.DataFrame, genre_mapping_path: str = None, genre_col: str = "title_tags"):
     # Get all unique tags from the title_tags column
-    unique_tags = sorted(set(tag for tags in df['title_tags'].apply(eval) for tag in tags))
+    unique_tags = sorted(set(tag for tags in df[genre_col].apply(eval) for tag in tags))
 
     # Create a mapping of tag to index
     tag_to_index = {tag: idx for idx, tag in enumerate(unique_tags)}
 
     # Add the genre_targets column
-    df['genre_targets'] = df['title_tags'].apply(
+    df['genre_targets'] = df[genre_col].apply(
         lambda tags: [1 if i in [tag_to_index[tag] for tag in eval(tags)] else 0 for i in range(len(unique_tags))]
     )
 
@@ -76,15 +76,15 @@ def prepare_genre_targets(df: pd.DataFrame, genre_mapping_path: str = None):
     return len(unique_tags)
 
 
-def prepare_album_targets(df: pd.DataFrame, album_mapping_path: str = None):
+def prepare_album_targets(df: pd.DataFrame, album_mapping_path: str = None, album_id_col: str = "album_id"):
     # Get all unique album IDs
-    unique_album_ids = sorted(df['album_id'].unique())
+    unique_album_ids = sorted(df[album_id_col].unique())
 
     # Create a mapping of album_id to index
-    album_id_to_index = {int(album_id): idx for idx, album_id in enumerate(unique_album_ids)}
+    album_id_to_index = {album_id: idx for idx, album_id in enumerate(unique_album_ids)}
 
     # Add the album_targets column
-    df['album_targets'] = df['album_id'].apply(
+    df['album_targets'] = df[album_id_col].apply(
         lambda album_id: [1 if i == album_id_to_index[album_id] else 0 for i in range(len(unique_album_ids))]
     )
 
