@@ -5,7 +5,7 @@ import time
 import random
 import pescador
 import numpy as np
-import tensorflow as tf
+import tensorflow
 import models
 import config_file, shared
 import pickle
@@ -138,13 +138,26 @@ def tf_define_model_and_cost(config):
             # kernel_initializer=tf.contrib.layers.variance_scaling_initializer()
         ) # [batch, num_classes_dataset]
 
-        normalized_y = tf.nn.sigmoid(y)
+        if config['loss_function'] == 'sigmoid_cross_entropy':
+            normalized_y = tf.nn.sigmoid(y)
+        elif config['loss_function'] == 'softmax_cross_entropy':
+            normalized_y = tf.nn.softmax(y)
+        else:
+            raise ValueError(f"Unsupported loss function: {config['loss_function']}. Use 'sigmoid_cross_entropy' or 'softmax_cross_entropy'.")
     logger.info(f'Number of parameters of the model: {str(shared.count_params(tf.trainable_variables()))}')
 
     # tensorflow: define cost function
     with tf.name_scope('metrics'):
         # if you use softmax_cross_entropy be sure that the output of your model has linear units!
-        cost = tf.losses.sigmoid_cross_entropy(multi_class_labels=y_, logits=y)
+        if config['loss_function'] == 'softmax_cross_entropy':
+            cost = tf.keras.losses.CategoricalCrossentropy(from_logits=True)(y_, y)
+        elif config['loss_function'] == 'sigmoid_cross_entropy':
+            cost = tf.losses.sigmoid_cross_entropy(multi_class_labels=y_, logits=y)
+        else:
+            raise ValueError(f"Unsupported loss function: {config['loss_function']}. Use 'softmax_cross_entropy' or 'sigmoid_cross_entropy'.")
+        
+        logger.info(f'Loss function: {config["loss_function"]}')
+
         if config['weight_decay'] != None:
             vars = tf.trainable_variables()
             lossL2 = tf.add_n([ tf.nn.l2_loss(v) for v in vars if 'kernel' in v.name ])
@@ -237,11 +250,11 @@ if __name__ == '__main__':
     [audio_repr_paths, id2audio_repr_path] = shared.load_id2path(file_index)
 
     # load training data
-    file_ground_truth_train = os.path.join(config_file.DATA_FOLDER, config['gt_train'])
+    file_ground_truth_train = os.path.join(config['gt_train'])
     [ids_train, id2gt_train] = shared.load_id2gt(file_ground_truth_train)
 
     # load validation data
-    file_ground_truth_val = os.path.join(config_file.DATA_FOLDER, config['gt_val'])
+    file_ground_truth_val = os.path.join(config['gt_val'])
     [ids_val, id2gt_val] = shared.load_id2gt(file_ground_truth_val)
 
     # set output
@@ -252,7 +265,7 @@ if __name__ == '__main__':
     logger.info(f"# Classes: {config['classes_vector']}")
 
     # save experimental settings
-    experiment_id = str(shared.get_epoch_time()) + args.configuration
+    experiment_id = time.strftime('%Y%m%d_%H%M%S') + '_' + args.configuration
     model_folder = os.path.join(config_file.DATA_FOLDER, 'experiments', str(experiment_id))
     if not os.path.exists(model_folder):
         os.makedirs(model_folder)
@@ -315,7 +328,7 @@ if __name__ == '__main__':
     saver = tf.train.Saver()
     if config['load_model'] != None: # restore model weights from previously saved model
         saver.restore(sess, config['load_model']) # end with /!
-        logger.info(f'Pre-trained model loaded!')
+        logger.info(f"Pre-trained model loaded from {config['load_model']}")
 
     # writing headers of the train_log.tsv
     fy = open(os.path.join(model_folder, 'train_log.tsv'), 'a')
@@ -377,5 +390,12 @@ if __name__ == '__main__':
                   (i+1, train_cost, val_cost, epoch_time,tmp_learning_rate,
                    str(time.strftime('%Y-%m-%d %H:%M:%S',time.gmtime())), save_path))
             cost_best_model = val_cost
+
+        # Save model every 50 epochs
+        if i % 50 == 0:
+            epoch_model_folder = os.path.join(model_folder, f'epoch_{i}')
+            os.makedirs(epoch_model_folder, exist_ok=True)
+            epoch_save_path = saver.save(sess, epoch_model_folder + '/')
+            logger.info(f'Model saved at epoch {i} in: {epoch_save_path}')
 
     logger.info(f'EVALUATE EXPERIMENT -> {str(experiment_id)}')

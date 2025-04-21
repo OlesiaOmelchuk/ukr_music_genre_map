@@ -115,7 +115,7 @@ if __name__ == '__main__':
 
     # list audios to process: according to 'index_file'
     files_to_convert = []
-    with open(os.path.join(config_file.DATA_FOLDER, config["index_file"]), encoding="utf-8") as f:
+    with open(os.path.join(config["index_file"]), encoding="utf-8") as f:
         for line in f.readlines():
             id, audio_path = line.strip().split("\t")
             audio_repr = os.path.splitext(os.path.basename(audio_path))[0] + ".pk"  # .npy or .pk
