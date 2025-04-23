@@ -11,6 +11,7 @@ import config_file, shared
 import pickle
 from tensorflow.python.framework import ops
 from loguru import logger
+import wandb
 
 # # disable eager mode for tf.v1 compatibility with tf.v2
 # tf.compat.v1.disable_eager_execution()
@@ -68,9 +69,9 @@ def multi_head_attention(inputs, num_heads, d_model, d_k, d_v, scope="multihead_
         attn_output = tf.reshape(attn_output, [batch_size, seq_len, num_heads * d_v])  # [batch, seq_len, d_model]
 
         # Final linear projection
-        # output = tf.layers.dense(attn_output, d_model, name="out_proj")  # [batch, seq_len, d_model]
+        output = tf.layers.dense(attn_output, d_model, name="out_proj")  # [batch, seq_len, d_model]
         
-        return attn_output
+        return output
     
 def tf_define_model_and_cost(config):
     # tensorflow: define the model
@@ -108,6 +109,7 @@ def tf_define_model_and_cost(config):
         logger.debug(f'Segment logits with positional encoding shape: {segment_logits.get_shape()}')
 
         # TODO: batch normalization (?)
+        segment_logits = tf.compat.v1.layers.batch_normalization(segment_logits, training=is_train)
 
         # Calculate attention and add to segment logits
         attention_output = multi_head_attention(segment_logits, num_heads=1, d_model=penultinate_units, d_k=penultinate_units, d_v=penultinate_units) # [batch, num_musicnn_segments, penultinate_units]
@@ -130,8 +132,12 @@ def tf_define_model_and_cost(config):
         # Finally, apply a dense layer to project from penultinate_units to num_classes
         feature_vectors_dense = tf.compat.v1.layers.batch_normalization(feature_vectors_dense, training=is_train)
         feature_vectors_dense_dropout = tf.compat.v1.layers.dropout(feature_vectors_dense, rate=0.5, training=is_train)
+
+        # Add L2 normalization here
+        feature_vectors_l2_normalized = tf.math.l2_normalize(feature_vectors_dense_dropout, axis=1)
+                                                     
         y = tf.compat.v1.layers.dense(
-            inputs=feature_vectors_dense_dropout,
+            inputs=feature_vectors_l2_normalized,
             units=config['num_classes_dataset'],
             activation=None,
             kernel_initializer=tf.keras.initializers.VarianceScaling()
@@ -339,6 +345,13 @@ if __name__ == '__main__':
     k_patience = 0
     cost_best_model = np.Inf
     tmp_learning_rate = config['learning_rate']
+
+    # Initialize wandb
+    wandb.init(project="ukr_genre_map_thesis", 
+            config=config,
+            name=f"exp_{experiment_id}",
+            notes="-")
+
     logger.info(f'Training started..')
     for i in range(config['epochs']):
         logger.info(f'Epoch {i+1}')
@@ -367,11 +380,27 @@ if __name__ == '__main__':
         fy.write('%d\t%g\t%g\t%gs\t%g\n' % (i+1, train_cost, val_cost, epoch_time, tmp_learning_rate))
         fy.close()
 
+        # Log to wandb
+        wandb.log({
+            "epoch": i+1,
+            "train/cost": train_cost,
+            "val/cost": val_cost,
+            "time/epoch": epoch_time,
+            "hyperparams/learning_rate": tmp_learning_rate,
+            "patience": k_patience
+        })
+
         # Decrease the learning rate after not improving in the validation set
-        if config['patience'] and k_patience >= config['patience']:
-            logger.info(f'Changing learning rate from {tmp_learning_rate} to {tmp_learning_rate / 2}')
-            tmp_learning_rate = tmp_learning_rate / 2
-            k_patience = 0
+        # if config['patience'] and k_patience >= config['patience']:
+        #     logger.info(f'Changing learning rate from {tmp_learning_rate} to {tmp_learning_rate / 2}')
+        #     tmp_learning_rate = tmp_learning_rate / 2
+        #     k_patience = 0
+
+        #     # Log learning rate change
+        #     wandb.log({
+        #         "hyperparams/learning_rate_change": tmp_learning_rate,
+        #         "patience_reset": 0
+        #     })
 
         # Early stopping: keep the best model in validation set
         if val_cost >= cost_best_model:
@@ -391,6 +420,16 @@ if __name__ == '__main__':
                    str(time.strftime('%Y-%m-%d %H:%M:%S',time.gmtime())), save_path))
             cost_best_model = val_cost
 
+            # Log best model information
+            wandb.log({
+                "best_model/val_cost": val_cost,
+                "best_model/epoch": i+1,
+                "best_model/save_path": save_path
+            })
+
+            # Optionally save model to wandb
+            # wandb.save(save_path + '*')  # Saves all model files
+
         # Save model every 50 epochs
         if i % 50 == 0:
             epoch_model_folder = os.path.join(model_folder, f'epoch_{i}')
@@ -398,4 +437,14 @@ if __name__ == '__main__':
             epoch_save_path = saver.save(sess, epoch_model_folder + '/')
             logger.info(f'Model saved at epoch {i} in: {epoch_save_path}')
 
+            # Log periodic model save
+            wandb.log({
+                "checkpoint/epoch": i,
+                "checkpoint/path": epoch_save_path
+            })
+            # wandb.save(epoch_model_folder + '/*')
+
     logger.info(f'EVALUATE EXPERIMENT -> {str(experiment_id)}')
+
+    # Mark run as completed
+    wandb.finish()

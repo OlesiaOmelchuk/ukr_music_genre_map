@@ -185,6 +185,7 @@ cython_debug/
 # model training artifacts and data
 model_training/musicnn-training/data/
 output/
+wandb/
 
 # debugging files
 debug*
