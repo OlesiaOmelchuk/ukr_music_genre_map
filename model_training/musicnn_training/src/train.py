@@ -86,6 +86,7 @@ def tf_define_model_and_cost(config):
         x = tf.compat.v1.placeholder(tf.float32, [None, num_musicnn_segments, segment_frames, n_mels])
         y_ = tf.compat.v1.placeholder(tf.float32, [None, config['num_classes_dataset']])
         is_train = tf.compat.v1.placeholder(tf.bool)
+        calculate_accuracy = tf.compat.v1.placeholder(tf.bool)
 
         # Process all segments in parallel
         batch_size = tf.shape(x)[0]
@@ -118,9 +119,19 @@ def tf_define_model_and_cost(config):
 
         # Aggregate segment-level features into song-level feature vector
         with tf.variable_scope('aggregation'):
-            penultinate_units_agg = tf.compat.v1.layers.flatten(segment_logits)  # [batch, num_musicnn_segments*penultinate_units]
+            if 'aggregation' in config and config['aggregation'] == 'attention':
+                attention_weights = tf.nn.softmax(segment_logits, axis=1)
+                penultinate_units_agg = tf.reduce_sum(attention_weights * segment_logits, axis=1)  # [batch, penultinate_units]
+            elif 'aggregation' in config and config['aggregation'] == 'meanpooling':
+                penultinate_units_agg = tf.reduce_mean(segment_logits, axis=1)
+            elif 'aggregation' in config and config['aggregation'] == 'maxpooling':
+                penultinate_units_agg = tf.reduce_max(segment_logits, axis=1)
+            else:
+                penultinate_units_agg = tf.compat.v1.layers.flatten(segment_logits)  # [batch, num_musicnn_segments*penultinate_units]
+
             penultinate_units_agg = tf.compat.v1.layers.batch_normalization(penultinate_units_agg, training=is_train)
             penultinate_units_agg_dropout = tf.compat.v1.layers.dropout(penultinate_units_agg, rate=0.5, training=is_train)
+
             feature_vectors_dense = tf.compat.v1.layers.dense(
                 inputs=penultinate_units_agg_dropout,
                 units=feature_vec_dim,
@@ -175,7 +186,18 @@ def tf_define_model_and_cost(config):
     for variables in model_vars:
         logger.debug(variables)
 
-    return [x, y_, is_train, y, normalized_y, cost]
+    def compute_accuracy(y, y_):
+        correct_prediction = tf.equal(tf.argmax(y, 1), tf.argmax(y_, 1))
+        accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+        return accuracy
+
+    accuracy = tf.cond(
+        calculate_accuracy,
+        true_fn=lambda: compute_accuracy(normalized_y, y_),  # Your accuracy computation
+        false_fn=lambda: tf.constant(-1.0)  # Dummy value (won't be used)
+    )
+    
+    return [x, y_, is_train, y, normalized_y, cost, calculate_accuracy, accuracy]
 
 
 def data_gen(id, audio_repr_path, gt, pack):
@@ -263,6 +285,14 @@ if __name__ == '__main__':
     file_ground_truth_val = os.path.join(config['gt_val'])
     [ids_val, id2gt_val] = shared.load_id2gt(file_ground_truth_val)
 
+    # load train subset (for metrics calculation)
+    if 'gt_train_subset' in config and config['gt_train_subset'] != None:
+        file_ground_truth_train_subset = os.path.join(config['gt_train_subset'])
+        [ids_train_subset, id2gt_train_subset] = shared.load_id2gt(file_ground_truth_train_subset)
+    else:
+        ids_train_subset = None
+        id2gt_train_subset = None
+
     # set output
     config['classes_vector'] = list(range(config['num_classes_dataset']))
 
@@ -281,6 +311,12 @@ if __name__ == '__main__':
     if not legacy_model_folder.endswith('/'):
         legacy_model_folder += '/'
 
+    legacy_model_folder_best_accuracy = os.path.join(model_folder, 'best_val_accuracy')
+    if not os.path.exists(legacy_model_folder_best_accuracy):
+        os.makedirs(legacy_model_folder_best_accuracy)
+    if not legacy_model_folder_best_accuracy.endswith('/'):
+        legacy_model_folder_best_accuracy += '/'
+
     logger.info(f'Config file saved: {str(config)}')
 
     # define the musicnn segment length and number of such segments in the input audio segment of length 'segment_len'
@@ -290,7 +326,7 @@ if __name__ == '__main__':
     config['num_musicnn_segments'] = num_musicnn_segments
 
     # tensorflow: define model and cost
-    [x, y_, is_train, y, normalized_y, cost] = tf_define_model_and_cost(config)
+    [x, y_, is_train, y, normalized_y, cost, calculate_accuracy, accuracy] = tf_define_model_and_cost(config)
 
     # tensorflow: define optimizer
     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS) # needed for batchnorm
@@ -329,6 +365,18 @@ if __name__ == '__main__':
     val_batch_streamer = pescador.ZMQStreamer(val_batch_streamer)
     logger.info('Successfully created val streamer!')
 
+    # pescador train subset: define streamer
+    if ids_train_subset != None:
+        train_subset_pack = [config, config['sampling_strategy'], segment_len_frames, num_musicnn_segments]
+        train_subset_streams = [pescador.Streamer(data_gen, id, id2audio_repr_path[id], id2gt_train_subset[id], train_subset_pack) for id in ids_train_subset]
+        train_subset_mux_stream = pescador.ChainMux(train_subset_streams, mode='exhaustive')
+        train_subset_batch_streamer = pescador.Streamer(pescador.buffer_stream, train_subset_mux_stream, buffer_size=config['val_batch_size'], partial=True)
+        train_subset_batch_streamer = pescador.ZMQStreamer(train_subset_batch_streamer)
+        logger.info('Successfully created train subset streamer!')
+    else:
+        train_subset_batch_streamer = None
+        logger.info('No train subset streamer created!')
+
     # tensorflow: create a session to run the tensorflow graph
     sess.run(tf.global_variables_initializer())
     saver = tf.train.Saver()
@@ -344,6 +392,7 @@ if __name__ == '__main__':
     # training
     k_patience = 0
     cost_best_model = np.Inf
+    accuracy_best_model = 0
     tmp_learning_rate = config['learning_rate']
 
     # Initialize wandb
@@ -362,19 +411,38 @@ if __name__ == '__main__':
             for train_batch in train_batch_streamer:
                 tf_start = time.time()
                 _, train_cost = sess.run([train_step, cost],
-                                         feed_dict={x: train_batch['X'], y_: train_batch['Y'], lr: tmp_learning_rate, is_train: True})
+                                         feed_dict={x: train_batch['X'], y_: train_batch['Y'], lr: tmp_learning_rate, is_train: True, calculate_accuracy: False})
                 array_train_cost.append(train_cost)
 
         # validation
         array_val_cost = []
+        array_val_accuracy = []
         for val_batch in val_batch_streamer:
-            val_cost = sess.run([cost],
-                                feed_dict={x: val_batch['X'], y_: val_batch['Y'], is_train: False})
+            val_cost, val_accuracy = sess.run([cost, accuracy],
+                                feed_dict={x: val_batch['X'], y_: val_batch['Y'], is_train: False, calculate_accuracy: True})
             array_val_cost.append(val_cost)
+            array_val_accuracy.append(val_accuracy)
+        
+        val_accuracy = np.mean(array_val_accuracy)
+
+        # metrics on test subset (if provided)
+        if train_subset_batch_streamer != None:
+            array_train_subset_cost = []
+            array_train_subset_accuracy = []
+            for train_subset_batch in train_subset_batch_streamer:
+                train_subset_cost, train_subset_accuracy = sess.run([cost, accuracy],
+                                        feed_dict={x: train_subset_batch['X'], y_: train_subset_batch['Y'], is_train: False, calculate_accuracy: True})
+                array_train_subset_cost.append(train_subset_cost)
+                array_train_subset_accuracy.append(train_subset_accuracy)
+
+            # Log metrics to wandb
+            wandb.log({
+                "train_subset/cost": np.mean(array_train_subset_cost),
+                "train_subset/accuracy": np.mean(array_train_subset_accuracy)
+            })
 
         # Keep track of average loss of the epoch
         train_cost = np.mean(array_train_cost)
-        val_cost = np.mean(array_val_cost)
         epoch_time = time.time() - start_time
         fy = open(os.path.join(model_folder, 'train_log.tsv'), 'a')
         fy.write('%d\t%g\t%g\t%gs\t%g\n' % (i+1, train_cost, val_cost, epoch_time, tmp_learning_rate))
@@ -385,6 +453,7 @@ if __name__ == '__main__':
             "epoch": i+1,
             "train/cost": train_cost,
             "val/cost": val_cost,
+            "val/accuracy": val_accuracy,
             "time/epoch": epoch_time,
             "hyperparams/learning_rate": tmp_learning_rate,
             "patience": k_patience
@@ -429,6 +498,17 @@ if __name__ == '__main__':
 
             # Optionally save model to wandb
             # wandb.save(save_path + '*')  # Saves all model files
+
+        # Save the best model based on validation accuracy
+        if val_accuracy >= accuracy_best_model:
+            accuracy_best_model = val_accuracy
+            save_path_best_accuracy = saver.save(sess, legacy_model_folder_best_accuracy)
+
+            wandb.log({
+                "best_accuracy_model/val_accuracy": val_accuracy,
+                "best_accuracy_model/epoch": i+1,
+                "best_accuracy_model/save_path": save_path_best_accuracy
+            })
 
         # Save model every 50 epochs
         if i % 50 == 0:
