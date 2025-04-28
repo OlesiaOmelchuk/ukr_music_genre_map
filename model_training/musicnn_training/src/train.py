@@ -120,12 +120,22 @@ def tf_define_model_and_cost(config):
         # Aggregate segment-level features into song-level feature vector
         with tf.variable_scope('aggregation'):
             if 'aggregation' in config and config['aggregation'] == 'attention':
-                attention_weights = tf.nn.softmax(segment_logits, axis=1)
-                penultinate_units_agg = tf.reduce_sum(attention_weights * segment_logits, axis=1)  # [batch, penultinate_units]
+                attention_scores = tf.compat.v1.layers.dense(
+                    segment_logits, 
+                    units=1,  # Scalar score per segment
+                    activation=None,
+                    name='attention_scores'
+                )  # [batch, num_segments, 1]
+                attention_weights = tf.nn.softmax(attention_scores, axis=1)  # Normalize across segments
+                penultinate_units_agg = tf.reduce_sum(segment_logits * attention_weights, axis=1)  # Weighted sum
             elif 'aggregation' in config and config['aggregation'] == 'meanpooling':
                 penultinate_units_agg = tf.reduce_mean(segment_logits, axis=1)
             elif 'aggregation' in config and config['aggregation'] == 'maxpooling':
                 penultinate_units_agg = tf.reduce_max(segment_logits, axis=1)
+            elif 'aggregation' in config and config['aggregation'] == 'meanmaxpooling':
+                mean_pool = tf.reduce_mean(segment_logits, axis=1)
+                max_pool = tf.reduce_max(segment_logits, axis=1)
+                penultinate_units_agg = tf.concat([mean_pool, max_pool], axis=1)
             else:
                 penultinate_units_agg = tf.compat.v1.layers.flatten(segment_logits)  # [batch, num_musicnn_segments*penultinate_units]
 
@@ -142,13 +152,16 @@ def tf_define_model_and_cost(config):
 
         # Finally, apply a dense layer to project from penultinate_units to num_classes
         feature_vectors_dense = tf.compat.v1.layers.batch_normalization(feature_vectors_dense, training=is_train)
-        feature_vectors_dense_dropout = tf.compat.v1.layers.dropout(feature_vectors_dense, rate=0.5, training=is_train)
+
+        if 'feat_vec_dropout' in config and config['feat_vec_dropout'] == True:
+            feature_vectors_dense = tf.compat.v1.layers.dropout(feature_vectors_dense, rate=0.5, training=is_train)
 
         # Add L2 normalization here
-        feature_vectors_l2_normalized = tf.math.l2_normalize(feature_vectors_dense_dropout, axis=1)
+        feature_vectors_normalized = tf.math.l2_normalize(feature_vectors_dense, axis=1)
+        # feature_vectors_normalized = tf.keras.layers.LayerNormalization()(feature_vectors_dense)
                                                      
         y = tf.compat.v1.layers.dense(
-            inputs=feature_vectors_l2_normalized,
+            inputs=feature_vectors_normalized,
             units=config['num_classes_dataset'],
             activation=None,
             kernel_initializer=tf.keras.initializers.VarianceScaling()
@@ -175,7 +188,7 @@ def tf_define_model_and_cost(config):
         
         logger.info(f'Loss function: {config["loss_function"]}')
 
-        if config['weight_decay'] != None:
+        if 'weight_decay' in config and config['weight_decay'] != None:
             vars = tf.trainable_variables()
             lossL2 = tf.add_n([ tf.nn.l2_loss(v) for v in vars if 'kernel' in v.name ])
             cost = cost + config['weight_decay']*lossL2
@@ -196,8 +209,8 @@ def tf_define_model_and_cost(config):
         true_fn=lambda: compute_accuracy(normalized_y, y_),  # Your accuracy computation
         false_fn=lambda: tf.constant(-1.0)  # Dummy value (won't be used)
     )
-    
-    return [x, y_, is_train, y, normalized_y, cost, calculate_accuracy, accuracy]
+
+    return [x, y_, is_train, y, normalized_y, cost, calculate_accuracy, accuracy, feature_vectors_normalized]
 
 
 def data_gen(id, audio_repr_path, gt, pack):
@@ -326,7 +339,7 @@ if __name__ == '__main__':
     config['num_musicnn_segments'] = num_musicnn_segments
 
     # tensorflow: define model and cost
-    [x, y_, is_train, y, normalized_y, cost, calculate_accuracy, accuracy] = tf_define_model_and_cost(config)
+    [x, y_, is_train, y, normalized_y, cost, calculate_accuracy, accuracy, _] = tf_define_model_and_cost(config)
 
     # tensorflow: define optimizer
     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS) # needed for batchnorm
@@ -419,30 +432,32 @@ if __name__ == '__main__':
         array_val_accuracy = []
         for val_batch in val_batch_streamer:
             val_cost, val_accuracy = sess.run([cost, accuracy],
-                                feed_dict={x: val_batch['X'], y_: val_batch['Y'], is_train: False, calculate_accuracy: True})
+                                feed_dict={x: val_batch['X'], y_: val_batch['Y'], is_train: False, calculate_accuracy: True if "genre" not in args.configuration else False})
             array_val_cost.append(val_cost)
             array_val_accuracy.append(val_accuracy)
         
-        val_accuracy = np.mean(array_val_accuracy)
-
         # metrics on test subset (if provided)
         if train_subset_batch_streamer != None:
             array_train_subset_cost = []
             array_train_subset_accuracy = []
             for train_subset_batch in train_subset_batch_streamer:
                 train_subset_cost, train_subset_accuracy = sess.run([cost, accuracy],
-                                        feed_dict={x: train_subset_batch['X'], y_: train_subset_batch['Y'], is_train: False, calculate_accuracy: True})
+                                        feed_dict={x: train_subset_batch['X'], y_: train_subset_batch['Y'], is_train: False, calculate_accuracy: True if "genre" not in args.configuration else False})
                 array_train_subset_cost.append(train_subset_cost)
                 array_train_subset_accuracy.append(train_subset_accuracy)
 
             # Log metrics to wandb
-            wandb.log({
-                "train_subset/cost": np.mean(array_train_subset_cost),
-                "train_subset/accuracy": np.mean(array_train_subset_accuracy)
-            })
+            # wandb.log({
+            #     "train/subset_cost": np.mean(array_train_subset_cost),
+            #     "train/subset_accuracy": np.mean(array_train_subset_accuracy)
+            # })
 
         # Keep track of average loss of the epoch
         train_cost = np.mean(array_train_cost)
+        val_accuracy = np.mean(array_val_accuracy)
+        val_cost = np.mean(array_val_cost)
+        train_subset_cost = np.mean(array_train_subset_cost) if train_subset_batch_streamer else None
+        train_subset_accuracy = np.mean(array_train_subset_accuracy) if train_subset_batch_streamer else None
         epoch_time = time.time() - start_time
         fy = open(os.path.join(model_folder, 'train_log.tsv'), 'a')
         fy.write('%d\t%g\t%g\t%gs\t%g\n' % (i+1, train_cost, val_cost, epoch_time, tmp_learning_rate))
@@ -454,6 +469,8 @@ if __name__ == '__main__':
             "train/cost": train_cost,
             "val/cost": val_cost,
             "val/accuracy": val_accuracy,
+            "train/subset_cost": train_subset_cost,
+            "train/subset_accuracy": train_subset_accuracy,
             "time/epoch": epoch_time,
             "hyperparams/learning_rate": tmp_learning_rate,
             "patience": k_patience
@@ -489,12 +506,14 @@ if __name__ == '__main__':
                    str(time.strftime('%Y-%m-%d %H:%M:%S',time.gmtime())), save_path))
             cost_best_model = val_cost
 
+            logger.info(f'Best model (validation loss) saved in: {save_path}')
+
             # Log best model information
-            wandb.log({
-                "best_model/val_cost": val_cost,
-                "best_model/epoch": i+1,
-                "best_model/save_path": save_path
-            })
+            # wandb.log({
+            #     "best_model/val_cost": val_cost,
+            #     "best_model/epoch": i+1,
+            #     "best_model/save_path": save_path
+            # })
 
             # Optionally save model to wandb
             # wandb.save(save_path + '*')  # Saves all model files
@@ -503,12 +522,13 @@ if __name__ == '__main__':
         if val_accuracy >= accuracy_best_model:
             accuracy_best_model = val_accuracy
             save_path_best_accuracy = saver.save(sess, legacy_model_folder_best_accuracy)
+            logger.info(f'Best model (validation accuracy) saved in: {save_path_best_accuracy}')
 
-            wandb.log({
-                "best_accuracy_model/val_accuracy": val_accuracy,
-                "best_accuracy_model/epoch": i+1,
-                "best_accuracy_model/save_path": save_path_best_accuracy
-            })
+            # wandb.log({
+            #     "best_accuracy_model/val_accuracy": val_accuracy,
+            #     "best_accuracy_model/epoch": i+1,
+            #     "best_accuracy_model/save_path": save_path_best_accuracy
+            # })
 
         # Save model every 50 epochs
         if i % 50 == 0:
@@ -518,10 +538,10 @@ if __name__ == '__main__':
             logger.info(f'Model saved at epoch {i} in: {epoch_save_path}')
 
             # Log periodic model save
-            wandb.log({
-                "checkpoint/epoch": i,
-                "checkpoint/path": epoch_save_path
-            })
+            # wandb.log({
+            #     "checkpoint/epoch": i,
+            #     "checkpoint/path": epoch_save_path
+            # })
             # wandb.save(epoch_model_folder + '/*')
 
     logger.info(f'EVALUATE EXPERIMENT -> {str(experiment_id)}')
