@@ -76,7 +76,7 @@ Both maps where colored according to the K-Means clusters for k=20 and visualize
 ![2D map of features (album)](./figures/merged_ukr_songs_v1_2k_genre_v1_tsne_artist_no_title.png)
 
 #### Interactive interface
-![2D map of features (album)](./figures/interface_example_cropped.png)
+![Interactive interface example](./figures/interface_example_cropped.PNG)
 
 ## Model architecture and training
 We adopt the Musicnn architecture with three key modifications to enable full-song processing and extraction of a single feature vector for a whole song:
