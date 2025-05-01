@@ -1,0 +1,6 @@
+model_checkpoint_path: "."
+all_model_checkpoint_paths: "../epoch_550"
+all_model_checkpoint_paths: "../epoch_600"
+all_model_checkpoint_paths: "../epoch_650"
+all_model_checkpoint_paths: "../epoch_700"
+all_model_checkpoint_paths: "."

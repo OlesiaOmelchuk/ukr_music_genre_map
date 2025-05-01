@@ -29,7 +29,7 @@ log_file = os.path.join(log_dir, f"{time.strftime('train_%Y-%m-%d_%H-%M-%S')}.lo
 logger.add(log_file, level="DEBUG")
 
 
-def multi_head_attention(inputs, num_heads, d_model, d_k, d_v, scope="multihead_attention"):
+def multi_head_attention(inputs, num_heads, d_model, d_k, d_v, scope="multihead_attention", final_linear=True):
     """
     Args:
         inputs: Tensor of shape [batch_size, seq_len, d_model]
@@ -69,9 +69,10 @@ def multi_head_attention(inputs, num_heads, d_model, d_k, d_v, scope="multihead_
         attn_output = tf.reshape(attn_output, [batch_size, seq_len, num_heads * d_v])  # [batch, seq_len, d_model]
 
         # Final linear projection
-        output = tf.layers.dense(attn_output, d_model, name="out_proj")  # [batch, seq_len, d_model]
-        
-        return output
+        if final_linear:
+            return tf.layers.dense(attn_output, d_model, name="out_proj")  # [batch, seq_len, d_model]
+        else:
+            return attn_output
     
 def tf_define_model_and_cost(config):
     # tensorflow: define the model
@@ -110,10 +111,12 @@ def tf_define_model_and_cost(config):
         logger.debug(f'Segment logits with positional encoding shape: {segment_logits.get_shape()}')
 
         # TODO: batch normalization (?)
-        segment_logits = tf.compat.v1.layers.batch_normalization(segment_logits, training=is_train)
+        if config['name_run'] != 'genre_full_train_v1_2k':
+            segment_logits = tf.compat.v1.layers.batch_normalization(segment_logits, training=is_train)
 
         # Calculate attention and add to segment logits
-        attention_output = multi_head_attention(segment_logits, num_heads=1, d_model=penultinate_units, d_k=penultinate_units, d_v=penultinate_units) # [batch, num_musicnn_segments, penultinate_units]
+        final_linear = False if config['name_run'] == 'genre_full_train_v1_2k' else True
+        attention_output = multi_head_attention(segment_logits, num_heads=1, d_model=penultinate_units, d_k=penultinate_units, d_v=penultinate_units, final_linear=final_linear) # [batch, num_musicnn_segments, penultinate_units]
         logger.debug(f'attention_output shape: {attention_output.get_shape()}')
         segment_logits = tf.add(segment_logits, attention_output)  # [batch, num_musicnn_segments, penultinate_units]
 
