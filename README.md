@@ -67,7 +67,16 @@ The final deliverable is a 2-dimensional visualization of the extracted feature 
 * `merged_ukr_songs_v1_2k_genre_v1_tsne_artist.html`: visualize features extracted from model trained on **genre tags**;
 * `merged_ukr_songs_v1_2k_album_v5_continue_tsne_artist.html`: visualize features extracted from model trained on **album labels**.
 
-Both maps where colored according to the K-Means clusters for k=20 and visualized with t-SNE dimensionality reduction approach.
+Both maps where colored according to the K-Means clusters for k=20 and visualized with t-SNE dimensionality reduction approach. Cluster names are defined as the most represented artist in the cluster.
+
+#### Album-level 2D map
+![2D map of features (album)](./figures/merged_ukr_songs_v1_2k_album_v5_continue_tsne_artist_no_title.png)
+
+#### Genre-level 2D map
+![2D map of features (album)](./figures/merged_ukr_songs_v1_2k_genre_v1_tsne_artist_no_title.png)
+
+#### Interactive interface
+![2D map of features (album)](./figures/interface_example_cropped.png)
 
 ## Model architecture and training
 We adopt the Musicnn architecture with three key modifications to enable full-song processing and extraction of a single feature vector for a whole song:
