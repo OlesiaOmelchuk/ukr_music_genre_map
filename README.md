@@ -153,3 +153,11 @@ print(features)
   year={2019},
 }
 ```
+
+## License
+[![Code License: MIT](https://img.shields.io/badge/Code%20License-MIT-yellow.svg)](LICENSE)
+[![Data License: CC BY 4.0](https://img.shields.io/badge/Data%20License-CC_BY_4.0-lightgrey.svg)](LICENSE-DATA)
+
+This work is licensed under:
+- **Code**: [MIT License](LICENSE)  
+- **Dataset**: [CC-BY-4.0 License](LICENSE-DATA)
